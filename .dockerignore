@@ -1,0 +1,34 @@
+# A "build context" az a fájlhalmaz, amit a docker build átad a build
+# motornak. Ez a fájl mondja meg, mi NE kerüljön bele.
+
+# Verziókövetés (a teljes commit history is ebben van)
+.git
+.gitignore
+.gitleaksignore
+
+# Titkok és helyi konfiguráció
+.env
+.env.*
+*.pem
+*.key
+
+# Python futásidejű cache fileok
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Tesztek és fejlesztői környezet: az image-be nem kell
+tests/
+.devcontainer/
+.github/
+.vscode/
+
+# Dokumentáció és maga a Dockerfile
+README.md
+docker/
+
+# Operációs rendszer
+.DS_Store

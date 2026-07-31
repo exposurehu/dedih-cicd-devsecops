@@ -42,7 +42,7 @@ jobs:
       - name: Tesztek futtatása (pytest)
         run: pytest
 
-  # ============================================================================
+  # ----------------------------------------------------------------------------
   # BLOCK 3 UNLOCK: Secret scanning
   # ----------------------------------------------------------------------------
   # A 3. blokkban (secret-ek) távolítjuk el a "# " jeleket a sorok elejéről.
@@ -53,7 +53,7 @@ jobs:
   # gitleaks/gitleaks-action@v2 wrapper viszont 2024 óta fizetős
   # organization-ök számára (GITLEAKS_LICENSE secret-et kérne), ezért a
   # binárist közvetlenül telepítjük és futtatjuk a release-ekből.
-  # ============================================================================
+  # ----------------------------------------------------------------------------
   # secret-scan:
   #   name: Secret scan (gitleaks)
   #   runs-on: ubuntu-latest
@@ -75,13 +75,13 @@ jobs:
   #     - name: Gitleaks futtatása
   #       run: gitleaks detect --source . --verbose --redact --log-opts="HEAD"
 
-  # ============================================================================
+  # ----------------------------------------------------------------------------
   # BLOCK 4 UNLOCK: Supply chain (SCA) scanning
   # ----------------------------------------------------------------------------
   # A 4. blokkban (supply chain) aktiváljuk. A pip-audit megnézi a
   # requirements.txt-t és leállítja a buildet, ha ismert CVE van benne.
   # A PyPA tartja karban, ezért konvencionálisan ezt választjuk.
-  # ============================================================================
+  # ----------------------------------------------------------------------------
   # sca-audit:
   #   name: SCA audit (pip-audit)
   #   runs-on: ubuntu-latest
@@ -99,28 +99,3 @@ jobs:
   #
   #     - name: Audit futtatása
   #       run: pip-audit -r requirements.txt
-
-  # ============================================================================
-  # BLOCK 5 UNLOCK: AI assisted code review
-  # ----------------------------------------------------------------------------
-  # Az 5. blokkban (AI a folyamatban) aktiváljuk. A Claude Code Action minden
-  # PR-en futtat egy AI code review-t. Kell hozzá egy CLAUDE_CODE_OAUTH_TOKEN
-  # repository secret. A demóban csak a kommentet vesszük le, éles használathoz
-  # a token beállítása szükséges.
-  # ============================================================================
-  # ai-review:
-  #   name: AI code review (Claude)
-  #   runs-on: ubuntu-latest
-  #   # Least privilege: csak annyi jog, amennyi szükséges
-  #   permissions:
-  #     contents: read         # a PR diff kiolvasásához
-  #     pull-requests: write   # hogy a Claude review-kommenteket írhasson
-  #   if: github.event_name == 'pull_request'
-  #   steps:
-  #     - name: Repo letöltése
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Claude Code Action
-  #       uses: anthropics/claude-code-action@v1
-  #       with:
-  #         claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
