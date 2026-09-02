@@ -33,3 +33,10 @@ def test_config_reports_configured_key(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"api_key_configured": True}
     assert "test-value" not in response.text
+
+
+def test_greet_accepts_max_length_name():
+    # Boundary test: the longest name the endpoint accepts.
+    long_name = "A" * 51
+    response = client.post("/greet", json={"name": long_name})
+    assert response.status_code == 200
