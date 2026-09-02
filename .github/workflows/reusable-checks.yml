@@ -1,0 +1,62 @@
+name: Reusable checks
+
+# ----------------------------------------------------------------------------
+# A reusable workflow. It is not started by an event of its own, another
+# workflow calls it with "uses:". deploy.yml calls it before deploying, so the
+# same lint and test run happens there without repeating the steps.
+#
+# What a reusable workflow is, compared to a composite action:
+#
+#   - it bundles a whole job, not a group of steps
+#   - it runs as its own job, with its own runner, and shows up separately in
+#     the Actions UI
+#   - it does not see the env: of the calling job
+#   - the calling job cannot set environment:, because on.workflow_call does
+#     not support that keyword, so environment scoped secrets never reach it,
+#     with or without secrets: inherit
+#   - it receives secrets through secrets: or secrets: inherit, and only
+#     repository and organisation scoped ones
+#
+# The last two points are why deploy.yml uses the composite action and not this
+# workflow for the job that needs the staging secret.
+#
+# The three checks below are the same ones ci.yml runs inline in
+# build-and-test. In a production repository they would be defined once, here
+# and called from both places. ci.yml keeps them written out because that file
+# is the one read line by line during the course, and a "uses:" pointing at
+# another file would move the explanation somewhere else.
+# ----------------------------------------------------------------------------
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "The Python version to run the checks on."
+        required: false
+        type: string
+        default: "3.11"
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint and tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python and install the dependencies
+        uses: ./.github/actions/setup
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff format)
+        run: ruff format --check .
+
+      - name: Tests (pytest)
+        run: pytest

@@ -1,8 +1,8 @@
 name: CI
 
-# A workflow minden push-ra és minden pull request-re lefut.
-# Így a main ágon és a PR-eken is van zöld/piros jelzés.
-# A workflow_dispatch a GitHub Actions UI-ról kézi indítást is enged.
+# The workflow runs on every push and on every pull request, so both the main
+# branch and the pull requests get a green or red signal. workflow_dispatch
+# also allows a manual run from the Actions UI.
 on:
   push:
     branches: ["**"]
@@ -10,92 +10,91 @@ on:
     branches: ["**"]
   workflow_dispatch:
 
+# Least privilege, at the workflow level. Every job starts with read only
+# access to the repository, and a job that needs more has to ask for it. The
+# default without this block is whatever the repository settings allow, which
+# in an older repository can still be read and write on everything.
+permissions:
+  contents: read
+
 jobs:
 
   # ----------------------------------------------------------------------------
-  # BLOCK 1-2 BASELINE: install, lint, test
-  # Ez a job a kurzus elején aktív. Block 2-ben a branch protection beállítással
-  # kötelezővé tesszük, hogy a "build-and-test" zöldre menjen a merge előtt.
+  # Install, lint, test. This is the job that branch protection makes a required
+  # check, so a pull request cannot be merged while it is red.
   # ----------------------------------------------------------------------------
   build-and-test:
-    name: Build és teszt
+    name: Build and test
     runs-on: ubuntu-latest
     steps:
-      - name: Repo letöltése
-        uses: actions/checkout@v4
+      - name: Check out the repository
+        # actions/checkout is published by GitHub itself and is referenced by
+        # its major version tag. A tag can be moved to different code, a commit
+        # SHA cannot, so the stricter policy is to pin every action to a SHA.
+        # docker.yml does that for the two actions that are not published by
+        # GitHub.
+        uses: actions/checkout@v7
 
-      - name: Python beállítása
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Függőségek telepítése
-        run: pip install -r requirements.txt
+      - name: Set up Python and install the dependencies
+        # A composite action. The steps live in .github/actions/setup and run
+        # inside this job.
+        uses: ./.github/actions/setup
 
       - name: Lint (ruff)
         run: ruff check .
 
-      - name: Formátum ellenőrzés (ruff format)
+      - name: Format check (ruff format)
         run: ruff format --check .
 
-      - name: Tesztek futtatása (pytest)
+      - name: Tests (pytest)
         run: pytest
 
   # ----------------------------------------------------------------------------
-  # BLOCK 3 UNLOCK: Secret scanning
+  # Secret scanning. gitleaks looks for values that have the shape of a
+  # credential: API keys, tokens, private keys.
+  #
+  # The gitleaks binary is MIT licensed and free. The gitleaks/gitleaks-action
+  # wrapper has been paid for organisations since 2024 and would ask for a
+  # GITLEAKS_LICENSE secret, so the binary is installed directly from the
+  # releases and pinned to an exact version.
   # ----------------------------------------------------------------------------
-  # A 3. blokkban (secret-ek) távolítjuk el a "# " jeleket a sorok elejéről.
-  # A gitleaks átfut a repo történetén és leállítja a buildet, ha planted
-  # vagy véletlenül commit-olt secret-et talál.
-  #
-  # Megjegyzés: a gitleaks bináris MIT-licencű, ingyenes. A
-  # gitleaks/gitleaks-action@v2 wrapper viszont 2024 óta fizetős
-  # organization-ök számára (GITLEAKS_LICENSE secret-et kérne), ezért a
-  # binárist közvetlenül telepítjük és futtatjuk a release-ekből.
-  # ----------------------------------------------------------------------------
-  # secret-scan:
-  #   name: Secret scan (gitleaks)
-  #   runs-on: ubuntu-latest
-  #   # Least privilege: csak annyi jog, amennyi szükséges
-  #   permissions:
-  #     contents: read         # a repo kiolvasásához
-  #   steps:
-  #     - name: Repo letöltése (teljes történettel)
-  #       uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0
-  #
-  #     - name: Gitleaks telepítése
-  #       run: |
-  #         GITLEAKS_VERSION=8.21.2
-  #         curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz
-  #         sudo mv gitleaks /usr/local/bin/
-  #
-  #     - name: Gitleaks futtatása
-  #       run: gitleaks detect --source . --verbose --redact --log-opts="HEAD"
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
 
-  # ----------------------------------------------------------------------------
-  # BLOCK 4 UNLOCK: Supply chain (SCA) scanning
-  # ----------------------------------------------------------------------------
-  # A 4. blokkban (supply chain) aktiváljuk. A pip-audit megnézi a
-  # requirements.txt-t és leállítja a buildet, ha ismert CVE van benne.
-  # A PyPA tartja karban, ezért konvencionálisan ezt választjuk.
-  # ----------------------------------------------------------------------------
-  # sca-audit:
-  #   name: SCA audit (pip-audit)
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Repo letöltése
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Python beállítása
-  #       uses: actions/setup-python@v5
-  #       with:
-  #         python-version: "3.11"
-  #
-  #     - name: Függőségek telepítése
-  #       run: pip install -r requirements.txt
-  #
-  #     - name: Audit futtatása
-  #       run: pip-audit -r requirements.txt
+      - name: Install gitleaks
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+
+      - name: Scan the working tree
+        # gitleaks dir scans the files as they are now. gitleaks git scans the
+        # commit history instead, and would keep failing forever once a
+        # credential has been committed, because deleting the value from the
+        # file does not remove it from the history. That is a true statement
+        # about the leak and a bad merge gate, so the gate looks at the current
+        # state and the history scan is run by hand when a leak is found.
+        run: |
+          gitleaks dir . \
+            --no-banner \
+            --redact \
+            --report-format json \
+            --report-path gitleaks-report.json
+
+      - name: Upload the report
+        # if: always() so the report is kept exactly when the scan failed and
+        # somebody needs to see what was found.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          if-no-files-found: ignore

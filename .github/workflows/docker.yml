@@ -1,51 +1,63 @@
 name: Docker build
 
 # ----------------------------------------------------------------------------
-# Docker image build demo
+# Docker image build, smoke test and vulnerability scan
 # ----------------------------------------------------------------------------
-# Ez a workflow szándékosan csak kézzel indítható (workflow_dispatch).
-# Indítás: GitHub > Actions > "Docker build" > Run workflow gomb.
+# Manual start only: Actions > Docker build > Run workflow.
 #
-# Amit a workflow csinál:
-#   1. buildeli az image-et a docker/Dockerfile alapján
-#   2. elindítja a konténert, és tényleg meghívja a két végpontot
+# What the workflow does:
+#   1. builds the image from docker/Dockerfile
+#   2. starts the container and calls the endpoints for real
+#   3. scans the built image twice, once as a gate and once as a report
 #
-# A 2. lépés fontos: attól, hogy egy image megépül, még nem biztos, hogy el
-# is indul. A "zöld build" akkor ér valamit, ha azt is ellenőrzi, hogy a
-# kiszállított artifact működik.
+# Step 2 matters: an image that builds is not necessarily an image that starts.
+# A green build is worth something when it also checks that the artifact it
+# produced works.
+#
+# Steps 3 and 4 are the same scanner with different filters, and the gap
+# between the two numbers is the point. The gate looks at what we chose, the
+# report looks at what we actually ship.
 # ----------------------------------------------------------------------------
 
 on:
-  # A workflow_dispatch lehetővé teszi, hogy a GitHub Actions UI-ról kézzel indítsuk a workflow-t.
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Image tag (üresen hagyva a rövid commit SHA lesz)"
+        description: "Image tag (left empty, the short commit SHA is used)"
         required: false
         default: ""
 
+permissions:
+  contents: read
+
 jobs:
   docker-build:
-    name: Docker build és smoke test
+    name: Docker build, smoke test and image scan
     runs-on: ubuntu-latest
 
-    # Least privilege: ez a job csak beolvassa a repot, semmit nem ír vissza.
-    # Ha később registry-be is push-olnánk, itt kellene bővíteni (lásd a fájl
-    # végén a "packages: write" sort).
+    # Least privilege: this job only reads the repository, it writes nothing
+    # back. Pushing to a registry would need more, see the end of the file.
     permissions:
       contents: read
 
-    steps:
-      - name: Repo letöltése
-        uses: actions/checkout@v4
+    env:
+      # Every tool that gets installed is pinned to an exact version. The flags
+      # of a scanner change between releases, so an unpinned scanner can turn a
+      # green pipeline red without a single line of the repository changing.
+      TRIVY_VERSION: "0.74.0"
 
-      - name: Image tag meghatározása
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Determine the image tag
         id: tag
-        # A felhasználói inputot env változón keresztül adjuk át a shell-nek,
-        # nem közvetlenül a ${{ }} behelyettesítéssel. Ha a szkriptbe írnánk
-        # be, a beírt szöveg parancsként futna le a runneren (script
-        # injection). Ez ugyanaz a "ne bízz a bemenetben" elv, amit a Pydantic
-        # validáció is képvisel az alkalmazás oldalán.
+        # The user input is passed to the shell through an environment
+        # variable, not by substituting ${{ }} into the script. Written into
+        # the script, the text typed into the input box would run as a command
+        # on the runner (script injection). It is the same "do not trust the
+        # input" principle that the Pydantic validation stands for on the
+        # application side.
         env:
           INPUT_TAG: ${{ inputs.image_tag }}
         run: |
@@ -55,38 +67,42 @@ jobs:
             TAG="$INPUT_TAG"
           fi
           echo "value=$TAG" >> "$GITHUB_OUTPUT"
-          echo "A build tag: $TAG"
+          echo "The build tag: $TAG"
 
-      - name: Docker Buildx beállítása
-        uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        # These two actions are not published by GitHub, so they are pinned to
+        # a commit SHA and the version is written next to it as a comment. A
+        # tag can be moved to different code, a SHA cannot. This is the
+        # stricter of the two policies in this repository, see ci.yml.
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - name: Image build
-        uses: docker/build-push-action@v6
+      - name: Build the image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
 
-          # A context a repo gyökere, a Dockerfile viszont a docker/ mappában
-          # van. A kettő külön paraméter.
+          # The context is the repository root, the Dockerfile is in the
+          # docker/ directory. Two separate parameters.
           context: .
           file: docker/Dockerfile
           tags: dedih-demo:${{ steps.tag.outputs.value }}
 
-          # push: false = most csak építünk, nem töltjük fel sehova
-          # load: true  = az image kerüljön be a runner helyi Docker-ébe, hogy
-          #               a következő lépésben el tudjuk indítani
+          # push: false = only building for now, not uploading anywhere
+          # load: true  = the image goes into the local Docker of the runner,
+          #               so the next steps can start and scan it
           push: false
           load: true
 
-          # A rétegek cache-elése a GitHub Actions cache-ében. A második
-          # futástól a build lényegesen gyorsabb.
+          # Layer caching in the GitHub Actions cache. From the second run the
+          # build is considerably faster.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Image mérete és rétegei
+      - name: Image size and layers
         env:
           TAG: ${{ steps.tag.outputs.value }}
-        # A docker history megmutatja, melyik utasítás mekkora réteget csinált.
-        # Itt látszik, hogy a multi-stage build miatt a telepítéshez használt
-        # eszközök nincsenek benne a kész image-ben.
+        # docker history shows which instruction produced which layer. The
+        # multi-stage build is visible here: the tools used for installing are
+        # not part of the finished image.
         run: |
           docker images dedih-demo
           echo
@@ -98,8 +114,8 @@ jobs:
         run: |
           docker run -d --name dedih-demo -p 8000:8000 "dedih-demo:$TAG"
 
-          # Az uvicorn indulása nem azonnali, ezért megvárjuk. Legfeljebb 15
-          # másodpercig próbálkozunk, utána a lépés hibára fut.
+          # uvicorn does not start instantly, so we wait for it. At most 15
+          # seconds, after that the step fails.
           for _ in $(seq 1 15); do
             if curl -sf http://127.0.0.1:8000/ > /dev/null; then
               break
@@ -107,75 +123,218 @@ jobs:
             sleep 1
           done
 
-          echo "GET / válasza:"
+          echo "GET / answers:"
           curl -sf http://127.0.0.1:8000/
           echo
 
-          echo "POST /greet válasza:"
+          echo "POST /greet answers:"
           curl -sf -X POST http://127.0.0.1:8000/greet \
             -H "Content-Type: application/json" \
             -d '{"name":"DEDIH"}'
           echo
 
-      - name: Konténer logja és takarítás
-        # if: always() = akkor is fusson le, ha a smoke test elbukott. Éppen
-        # akkor a legérdekesebb a konténer logja, amikor valami nem működik.
+      - name: Container log and cleanup
+        # if: always() = run this even if the smoke test failed. The container
+        # log is most interesting exactly when something did not work.
         if: always()
         run: |
-          echo "A konténer logja:"
+          echo "The log of the container:"
           docker logs dedih-demo || true
           docker rm -f dedih-demo || true
 
+      # --------------------------------------------------------------------
+      # The scanner. Trivy reads the built image: the operating system
+      # packages of the base layer and the Python packages in the virtualenv
+      # at /opt/venv alike. That is why there is no separate tool reading
+      # requirements.txt: it would be the same check twice, on a smaller
+      # surface.
+      # --------------------------------------------------------------------
+      - name: Install Trivy
+        run: |
+          curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar xz trivy
+          sudo mv trivy /usr/local/bin/
+          trivy --version
+
+      - name: Scan the image, gate
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        # The gate. Three filters, and each one has a reason:
+        #
+        #   --pkg-types library   only our own packages, not the base operating
+        #                         system. We chose these, we can change them.
+        #   --ignore-unfixed      only findings that have a fixed version. A
+        #                         finding with no fix cannot be acted on today.
+        #   --severity HIGH,CRITICAL   the ones worth stopping a release for.
+        #
+        # --exit-code 1 makes the job red when something gets through the
+        # filters. What blocks you has to be actionable: a gate that fires on
+        # things nobody can fix gets switched off within a month, and then you
+        # have neither the gate nor the information.
+        #
+        # The remediation is to raise the pin in requirements.txt to the fixed
+        # version, then run the tests. There is no automatic fix command.
+        run: |
+          set +e
+          trivy image \
+            --scanners vuln \
+            --pkg-types library \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --no-progress \
+            --skip-version-check \
+            --format table \
+            --output trivy-gate.txt \
+            "dedih-demo:$TAG"
+          STATUS=$?
+          set -e
+
+          cat trivy-gate.txt
+
+          {
+            echo "## Image scan, gate"
+            echo
+            echo "Our own packages, fixable findings only, HIGH and CRITICAL only."
+            echo
+            echo '```'
+            cat trivy-gate.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit $STATUS
+
+      - name: Scan the image, report
+        # if: always() so the report is produced even when the gate above
+        # failed. This is the step that answers "what do we actually ship",
+        # and that question is most interesting when something is wrong.
+        if: always()
+        env:
+          TAG: ${{ steps.tag.outputs.value }}
+        # The report. No filters at all: the base operating system is in it,
+        # the findings with no fix are in it, every severity is in it.
+        # --exit-code 0 means it never fails the build. What informs you can
+        # be complete.
+        #
+        # --skip-db-update because the gate already downloaded the
+        # vulnerability database into the cache of this runner a minute ago.
+        run: |
+          trivy image \
+            --scanners vuln \
+            --pkg-types os,library \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --exit-code 0 \
+            --skip-db-update \
+            --no-progress \
+            --skip-version-check \
+            --format table \
+            --output trivy-report.txt \
+            "dedih-demo:$TAG"
+
+          trivy image \
+            --scanners vuln \
+            --pkg-types os,library \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --exit-code 0 \
+            --skip-db-update \
+            --no-progress \
+            --skip-version-check \
+            --format json \
+            --output trivy-report.json \
+            "dedih-demo:$TAG"
+
+          # The same data in machine readable form is what makes counting
+          # possible. This is the number to hold next to the gate above.
+          TOTAL=$(jq '[.Results[].Vulnerabilities // [] | length] | add // 0' trivy-report.json)
+          OS_COUNT=$(jq '[.Results[] | select(.Class == "os-pkgs") | .Vulnerabilities // [] | length] | add // 0' trivy-report.json)
+          LIB_COUNT=$(jq '[.Results[] | select(.Class == "lang-pkgs") | .Vulnerabilities // [] | length] | add // 0' trivy-report.json)
+          FIXABLE=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.FixedVersion != null)] | length' trivy-report.json)
+
+          cat trivy-report.txt
+
+          {
+            echo "## Image scan, report"
+            echo
+            echo "Everything the image contains. This step never fails the build."
+            echo
+            echo "| | Count |"
+            echo "| --- | --- |"
+            echo "| All findings | $TOTAL |"
+            echo "| In the base operating system | $OS_COUNT |"
+            echo "| In the Python packages | $LIB_COUNT |"
+            echo "| Of these, has a fixed version | $FIXABLE |"
+            echo
+            echo "<details><summary>The full Trivy output</summary>"
+            echo
+            echo '```'
+            cat trivy-report.txt
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the scan reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-reports
+          path: |
+            trivy-gate.txt
+            trivy-report.txt
+            trivy-report.json
+          if-no-files-found: ignore
+
 # ----------------------------------------------------------------------------
-# ÉS HA MEGÉPÜLT AZ IMAGE, MI TÖRTÉNIK VELE?
+# AND ONCE THE IMAGE IS BUILT, WHAT HAPPENS TO IT?
 # ----------------------------------------------------------------------------
-# A workflow eddig a pontig megépíti és kipróbálja az image-et, aztán eldobja.
-# Éles projektben a build után az image egy registry-be kerül, ahonnan a
-# futtató környezet (szerver, Kubernetes, App Service) le tudja húzni.
+# Up to this point the workflow builds the image, tries it out, scans it and
+# then throws it away. In a real project the image goes into a registry after
+# the build, and the environment that runs it (a server, Kubernetes, App
+# Service) pulls it from there.
 #
-# Mielőtt bármelyik registry jönne, két általános szabály:
+# Before any registry, two general rules:
 #
-#   1. NE csak "latest" tag-et használj. A latest átírható, és később nem
-#      lehet megmondani, melyik commit fut éppen élesben. A commit SHA
-#      egyértelmű: dedih-demo:a1b2c3d. A latest emellé mehet, nem helyette.
-#   2. A registry jelszavát soha ne írd be a workflow fájlba. Repository
-#      secret-ként tedd el (Settings > Secrets and variables > Actions), és
-#      ${{ secrets.NEV }} formában hivatkozz rá.
+#   1. Do NOT use only the "latest" tag. latest can be repointed, and later
+#      nobody can say which commit is running in production. The commit SHA is
+#      unambiguous: dedih-demo:a1b2c3d. latest can go next to it, not instead
+#      of it.
+#   2. Never write the registry password into the workflow file. Store it as a
+#      repository secret (Settings > Secrets and variables > Actions) and
+#      reference it as ${{ secrets.NAME }}.
 #
 # ----------------------------------------------------------------------------
-# A) GitHub Packages (GHCR) - a legegyszerűbb, ha a kód már GitHubon van
+# A) GitHub Packages (GHCR), the simplest one when the code is already on GitHub
 # ----------------------------------------------------------------------------
-# Nem kell hozzá külön fiók és külön secret: a GITHUB_TOKEN automatikusan
-# létezik minden workflow futásban. Csak a jogosultságot kell megadni neki.
+# It needs no separate account and no separate secret: GITHUB_TOKEN exists
+# automatically in every workflow run. Only the permission has to be granted.
 #
 #     permissions:
 #       contents: read
-#       packages: write          # <- ez kell az image feltöltéséhez
+#       packages: write          # <- this is what uploading the image needs
 #
-#     - name: Belépés a GHCR-be
+#     - name: Log in to GHCR
 #       uses: docker/login-action@v3
 #       with:
 #         registry: ghcr.io
 #         username: ${{ github.actor }}
 #         password: ${{ secrets.GITHUB_TOKEN }}
 #
-#         # A build lépésben pedig:
+#         # and in the build step:
 #         push: true
 #         tags: ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.value }}
 #
-# Az image ezután a repo "Packages" szekciójában jelenik meg. Figyelem: a
-# GHCR csak kisbetűs nevet fogad el, tehát ha a GitHub felhasználónévben nagy
-# betű van, azt előbb kisbetűsíteni kell.
+# The image then shows up in the Packages section of the repository. Note that
+# GHCR only accepts lowercase names, so an uppercase letter in the GitHub user
+# name has to be lowercased first.
 #
 # ----------------------------------------------------------------------------
-# B) Docker Hub - a legismertebb publikus registry
+# B) Docker Hub, the best known public registry
 # ----------------------------------------------------------------------------
-# Itt már saját fiók és két repository secret kell:
-#   DOCKERHUB_USERNAME  - a Docker Hub felhasználónév
-#   DOCKERHUB_TOKEN     - Access Token (Docker Hub > Account Settings >
-#                         Personal access tokens), NEM a fiók jelszava
+# This one needs an account of your own and two repository secrets:
+#   DOCKERHUB_USERNAME  - the Docker Hub user name
+#   DOCKERHUB_TOKEN     - an Access Token (Docker Hub > Account Settings >
+#                         Personal access tokens), NOT the account password
 #
-#     - name: Belépés a Docker Hubra
+#     - name: Log in to Docker Hub
 #       uses: docker/login-action@v3
 #       with:
 #         username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -184,34 +343,34 @@ jobs:
 #         push: true
 #         tags: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/dedih-demo:${{ steps.tag.outputs.value }}
 #
-# Azért access token és nem jelszó, mert a token visszavonható anélkül, hogy
-# a fiók jelszavát cserélni kellene, és korlátozható a jogosultsága.
+# An access token rather than a password, because a token can be revoked
+# without changing the account password, and its rights can be limited.
 #
 # ----------------------------------------------------------------------------
-# C) Azure Container Registry (ACR) - vállalati, privát registry
+# C) Azure Container Registry (ACR), a private company registry
 # ----------------------------------------------------------------------------
-# Két út van. Az egyszerűbb ugyanaz a minta, mint fent, felhasználónévvel és
-# jelszóval:
+# There are two ways. The simpler one is the same pattern as above, with a user
+# name and a password:
 #
-#     - name: Belépés az ACR-be
+#     - name: Log in to ACR
 #       uses: docker/login-action@v3
 #       with:
-#         registry: <container-registry-neve>.azurecr.io
+#         registry: <registry-name>.azurecr.io
 #         username: ${{ secrets.ACR_USERNAME }}
 #         password: ${{ secrets.ACR_PASSWORD }}
 #
 #         push: true
-#         tags: <container-registry-neve>.azurecr.io/dedih-demo:${{ steps.tag.outputs.value }}
+#         tags: <registry-name>.azurecr.io/dedih-demo:${{ steps.tag.outputs.value }}
 #
-# A korszerűbb megoldás viszont OIDC federated credential: ilyenkor egyáltalán
-# NINCS tárolt jelszó. A GitHub futás közben kap egy rövid életű tokent, amit
-# az Azure ellenőriz, és ami percek alatt lejár.
+# The current approach is an OIDC federated credential: there is no stored
+# password at all. GitHub receives a short lived token during the run, Azure
+# verifies it, and it expires within minutes.
 #
 #     permissions:
 #       contents: read
-#       id-token: write          # <- ez kell az OIDC tokenhez
+#       id-token: write          # <- this is what the OIDC token needs
 #
-#     - name: Bejelentkezés az Azure-ba (OIDC, jelszó nélkül)
+#     - name: Sign in to Azure (OIDC, without a password)
 #       uses: azure/login@v2
 #       with:
 #         client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -219,26 +378,25 @@ jobs:
 #         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 #
 #     - name: ACR login
-#       run: az acr login --name <container-registry-neve>
+#       run: az acr login --name <registry-name>
 #
-# Ez a secret-ek blokkjának a folytatása: a legbiztonságosabb titok az, ami
-# nem is létezik. Amit nem tárolunk, azt nem is lehet kiszivárogtatni.
+# This is the continuation of the secrets block: the safest secret is the one
+# that does not exist. What is not stored cannot be leaked.
 #
 # ----------------------------------------------------------------------------
-# D) Ami a push után szokott jönni
+# D) What usually follows the push
 # ----------------------------------------------------------------------------
-#   - Image vizsgálat: a trivy vagy a grype végigmegy az image-ben lévő
-#     csomagokon és jelzi az ismert CVE-ket. Ugyanaz, amit a pip-audit csinál
-#     a requirements.txt-vel, csak az egész operációs rendszer rétegre.
-#     Érdemes a push ELŐTT futtatni, hogy sérülékeny image ki se kerüljön.
-#   - SBOM (Software Bill of Materials): tételes lista arról, mi van az
-#     image-ben. A build-push-action tudja generálni (sbom: true).
-#   - Aláírás: a cosign digitális aláírással látja el az image-et, így a
-#     futtató környezet ellenőrizni tudja, hogy tényleg a mi pipeline-unk
-#     építette, és senki nem cserélte ki.
-#   - Deploy: a registry-ből a futtató környezet húzza le az image-et. Ez már
-#     a CD (continuous deployment) rész, ami külön workflow szokott lenni.
-#   - Több architektúra: platforms: linux/amd64,linux/arm64 megadásával
-#     Apple Silicon gépeken is futtatható image készül. Ilyenkor a load: true
-#     nem működik, mert egyszerre több image készül.
+#   - Image scanning: the two Trivy steps above already do this, and in a
+#     pipeline that pushes they belong before the push, so a vulnerable image
+#     never leaves the build.
+#   - SBOM (Software Bill of Materials): an itemised list of what is in the
+#     image. build-push-action can generate one (sbom: true), and Trivy can as
+#     well (--format cyclonedx or --format spdx-json).
+#   - Signing: cosign puts a digital signature on the image, so the running
+#     environment can verify that our pipeline built it and nobody swapped it.
+#   - Deploy: the running environment pulls the image from the registry. That
+#     is the CD part, and it is usually a separate workflow.
+#   - Multiple architectures: platforms: linux/amd64,linux/arm64 produces an
+#     image that also runs on Apple Silicon machines. load: true does not work
+#     then, because more than one image is built at once.
 # ----------------------------------------------------------------------------

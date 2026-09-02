@@ -1,7 +1,7 @@
 [project]
 name = "dedih-cicd-devsecops"
 version = "0.1.0"
-description = "DEDIH 2.0 CI/CD és DevSecOps kurzus demo repo"
+description = "DEDIH 2.0 CI/CD and DevSecOps course demo repository"
 requires-python = ">=3.11"
 
 [tool.ruff]

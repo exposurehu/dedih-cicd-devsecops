@@ -1,0 +1,191 @@
+name: AI review
+
+# ----------------------------------------------------------------------------
+# An automated code review, with the model running on the runner itself.
+#
+# Nothing has to be signed up for and no API key is needed: the job downloads a
+# small open weight model onto the GitHub Actions runner and asks it about the
+# diff of the pull request. The code never leaves the run.
+#
+# What this costs in quality is stated up front, not discovered afterwards. A
+# free runner has four CPU cores and no GPU, so the model has to be small, and
+# a small model writes a modest review. On a machine with a GPU the same
+# workflow can run a model ten times the size, and the review gets useful.
+#
+# Manual start: Actions > AI review > Run workflow, then the number of the
+# pull request to review.
+# ----------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "The number of the pull request to review"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ai-review:
+    name: AI review, model on the runner
+    runs-on: ubuntu-latest
+
+    # Least privilege, and this is the job where it is worth reading carefully.
+    # It writes a comment on a pull request, so it needs one write permission
+    # and no others. It cannot push a commit, it cannot change a workflow file,
+    # it cannot approve anything.
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      OLLAMA_VERSION: "0.33.2"
+      MODEL: "qwen2.5-coder:1.5b"
+      PR_NUMBER: ${{ inputs.pr_number }}
+      # The built in token of the run. It is created for this run, it expires
+      # when the run ends, and it carries exactly the permissions declared
+      # above. Nobody has to store it anywhere.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Read the diff of the pull request
+        run: |
+          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > diff.txt
+          echo "The diff is $(wc -l < diff.txt) lines long."
+          cat diff.txt
+
+      - name: Install Ollama
+        # Ollama is the runtime that loads the model and serves it over HTTP.
+        # The release archive is pinned to an exact version, the same way the
+        # other tools in this repository are. The install script published on
+        # the vendor site would be a curl piped into a shell, which is exactly
+        # what a supply chain block argues against.
+        run: |
+          curl -fsSL "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst" \
+            | zstd -d | sudo tar -xf - -C /usr/local
+          ollama --version
+
+      - name: Start the model server and download the model
+        run: |
+          ollama serve > ollama-server.log 2>&1 &
+
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:11434/api/version > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          START=$(date +%s)
+          ollama pull "$MODEL"
+          END=$(date +%s)
+          echo "MODEL_PULL_SECONDS=$((END - START))" >> "$GITHUB_ENV"
+          echo "The model was downloaded in $((END - START)) seconds."
+
+      - name: Run the review
+        run: |
+          # The prompt is the diff plus the current source of the application.
+          # Without the source the model would only see the changed lines and
+          # could not tell whether they contradict anything.
+          {
+            echo "You are reviewing a pull request in a Python FastAPI project."
+            echo "List the concrete problems in the change: bugs, wrong assumptions about"
+            echo "the existing code, missing validation. Be specific and short, at most six"
+            echo "bullet points. If you find no problem, say so in one sentence."
+            echo "Do not comment on formatting and do not repeat the code back."
+            echo
+            echo "### The current source of the application"
+            echo
+            for f in app/*.py; do
+              echo "--- $f ---"
+              cat "$f"
+              echo
+            done
+            echo "### The change in the pull request"
+            echo
+            cat diff.txt
+          } > prompt.txt
+
+          # jq -Rs reads the file as one raw string and escapes it for JSON, so
+          # quotes and backslashes in the diff cannot break the request.
+          jq -Rs --arg model "$MODEL" \
+            '{model: $model, prompt: ., stream: false, options: {temperature: 0.2, num_predict: 500}}' \
+            prompt.txt > request.json
+
+          START=$(date +%s)
+          curl -sS http://127.0.0.1:11434/api/generate -d @request.json > response.json
+          END=$(date +%s)
+
+          jq -r '.response' response.json > review-body.md
+
+          # Ollama returns the timings of the run in nanoseconds next to the
+          # answer. This is the measurement to quote when somebody asks what a
+          # model costs in a pipeline.
+          EVAL_COUNT=$(jq -r '.eval_count // 0' response.json)
+          EVAL_NS=$(jq -r '.eval_duration // 0' response.json)
+          TOKENS_PER_SEC=$(awk -v c="$EVAL_COUNT" -v n="$EVAL_NS" 'BEGIN { if (n > 0) printf "%.1f", c / (n / 1000000000); else print "0" }')
+
+          {
+            echo "GENERATION_SECONDS=$((END - START))"
+            echo "EVAL_COUNT=$EVAL_COUNT"
+            echo "TOKENS_PER_SEC=$TOKENS_PER_SEC"
+          } >> "$GITHUB_ENV"
+
+          echo "The model wrote $EVAL_COUNT tokens in $((END - START)) seconds, $TOKENS_PER_SEC tokens per second."
+          echo
+          cat review-body.md
+
+      - name: Post the comment on the pull request
+        run: |
+          {
+            echo "### Automated review"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Model | \`$MODEL\` |"
+            echo "| Where it ran | on the GitHub Actions runner, 4 CPU cores, no GPU |"
+            echo "| Model download | ${MODEL_PULL_SECONDS}s |"
+            echo "| Generation | ${GENERATION_SECONDS}s, ${EVAL_COUNT} tokens, ${TOKENS_PER_SEC} tokens per second |"
+            echo
+            echo "This is a small model on a free runner. Read what follows as a hint that"
+            echo "is worth a look, not as a verdict. The gates that block the merge are the"
+            echo "tests and the scanners, not this comment."
+            echo
+            echo "---"
+            echo
+            cat review-body.md
+          } > comment.md
+
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+
+      - name: Write the measurements into the job summary
+        if: always()
+        run: |
+          {
+            echo "## AI review"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Model | \`$MODEL\` |"
+            echo "| Model download | ${MODEL_PULL_SECONDS}s |"
+            echo "| Generation | ${GENERATION_SECONDS}s |"
+            echo "| Tokens written | ${EVAL_COUNT} |"
+            echo "| Speed | ${TOKENS_PER_SEC} tokens per second |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the prompt and the answer
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-review
+          path: |
+            prompt.txt
+            response.json
+            review-body.md
+            ollama-server.log
+          if-no-files-found: ignore

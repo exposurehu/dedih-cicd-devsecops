@@ -1,9 +1,10 @@
 from fastapi.testclient import TestClient
 
+from app.config import API_KEY_ENV
 from app.main import app
 
-# A TestClient nem indítja el a szervert, csak a FastAPI alkalmazás
-# routingját hívja meg. Ezért gyors és ideális CI-ben.
+# TestClient does not start a server, it calls the routing of the FastAPI
+# application directly. That is why it is fast and a good fit for CI.
 
 client = TestClient(app)
 
@@ -21,6 +22,23 @@ def test_greet_returns_personal_message():
 
 
 def test_greet_rejects_empty_name():
-    # A Pydantic validáció miatt üres név nem fogadható el.
+    # Pydantic validation rejects an empty name.
     response = client.post("/greet", json={"name": ""})
     assert response.status_code == 422
+
+
+def test_config_reports_missing_key(monkeypatch):
+    # With no environment variable set, the endpoint reports false.
+    monkeypatch.delenv(API_KEY_ENV, raising=False)
+    response = client.get("/config")
+    assert response.status_code == 200
+    assert response.json() == {"api_key_configured": False}
+
+
+def test_config_reports_configured_key(monkeypatch):
+    # The endpoint reports true, and the value is not part of the response.
+    monkeypatch.setenv(API_KEY_ENV, "test-value")
+    response = client.get("/config")
+    assert response.status_code == 200
+    assert response.json() == {"api_key_configured": True}
+    assert "test-value" not in response.text

@@ -1,0 +1,32 @@
+name: "Set up the Python environment"
+description: >
+  Sets up the pinned Python version and installs the project dependencies from
+  requirements.txt. Every job that needs Python starts with these two steps, so
+  they live here once instead of being copied into every workflow file.
+
+# A composite action bundles a group of steps and runs them inside the calling
+# job. It sees the environment of the calling job, it can be used in a job that
+# has an environment: set, and it does not appear as a separate job in the
+# Actions UI. A reusable workflow bundles a whole job instead, and behaves
+# differently on all three counts. See .github/workflows/reusable-checks.yml.
+
+inputs:
+  python-version:
+    description: "The Python version to install."
+    required: false
+    default: "3.11"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+
+    - name: Install the dependencies
+      # A composite action must state the shell for every run step. In a
+      # workflow the shell has a default, here it does not.
+      shell: bash
+      run: pip install -r requirements.txt

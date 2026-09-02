@@ -1,0 +1,104 @@
+name: Deploy
+
+# ----------------------------------------------------------------------------
+# Simulated deployment. Nothing is deployed anywhere: the job starts the
+# application on the runner with the secret injected and checks what the
+# application reports about its own configuration. That is enough to show the
+# three things this file is about:
+#
+#   1. how a secret reaches a job, and what the log shows of it
+#   2. what a scope means: an environment secret is not visible to a job that
+#      has no environment
+#   3. what a reusable workflow can and cannot do next to a composite action
+#
+# Manual start only: Actions > Deploy > Run workflow.
+# ----------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ----------------------------------------------------------------------------
+  # A reusable workflow instead of a set of steps. It runs as its own job, on
+  # its own runner. It cannot be given an environment:, because on.workflow_call
+  # does not support that keyword.
+  # ----------------------------------------------------------------------------
+  verify:
+    uses: ./.github/workflows/reusable-checks.yml
+
+  # ----------------------------------------------------------------------------
+  # The same secret reference as in deploy-staging, in a job that has no
+  # environment. An environment scoped secret does not reach this job, so the
+  # expression resolves to an empty string. A repository or organisation scoped
+  # secret of the same name would resolve here as well, which is the difference
+  # the two jobs make visible in a single run.
+  # ----------------------------------------------------------------------------
+  secret-scope:
+    name: Secret scope, without an environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check what this job can see
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "No value. This job has no environment, so an environment scoped secret does not reach it."
+          else
+            echo "There is a value, ${#OPENAI_API_KEY} characters long. It comes from a repository or organisation scoped secret."
+          fi
+
+  # ----------------------------------------------------------------------------
+  # The deployment job. environment: staging does two things: it gives the job
+  # access to the secrets and variables of that environment, and it applies the
+  # protection rules of that environment, so a required reviewer holds the job
+  # in a waiting state until somebody approves it. That is a second gate, on
+  # top of the merge gate that branch protection adds.
+  # ----------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to staging
+    needs: [verify, secret-scope]
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python and install the dependencies
+        # A composite action runs inside this job, so it works under an
+        # environment: and it sees the env: of this job. A reusable workflow
+        # would not.
+        uses: ./.github/actions/setup
+
+      - name: What the log shows of the secret
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          echo "The value, printed straight into the log: $OPENAI_API_KEY"
+          echo "The length of the same value: ${#OPENAI_API_KEY} characters"
+          echo
+          echo "GitHub replaces a known secret value with *** in the log. The length shows"
+          echo "the value is really there. Masking is a safety net, not a control: a step"
+          echo "that transforms the value, base64 for example, prints it in the clear."
+
+      - name: Start the application and ask it about its configuration
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          for _ in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8000/ > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          echo "GET /config answers:"
+          curl -sf http://127.0.0.1:8000/config
+          echo
+
+          echo "The endpoint reports whether a key is configured. It never returns the"
+          echo "value, so this output is safe to keep in a log."
