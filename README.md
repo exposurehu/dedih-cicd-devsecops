@@ -82,7 +82,7 @@ participants see a red required check block a merge in their own repository.
 
 | File | Trigger | What it does |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | every push and pull request | `build-and-test`: lint, format check, tests. `secret-scan`: gitleaks over the working tree. |
+| `.github/workflows/ci.yml` | pull requests, and pushes to `main` | `build-and-test`: lint, format check, tests. `secret-scan`: gitleaks over the working tree. |
 | `.github/workflows/docker.yml` | manual | `secret-scan`, then a build that `needs:` it, a smoke test and two Trivy scans. |
 | `.github/workflows/deploy.yml` | manual | Two gates, `secret-scan` and `verify`, then a deployment that `needs:` both. |
 | `.github/workflows/deploy-environments.yml` | manual | The same file with a GitHub Environment added. The diff against `deploy.yml` is the lesson. |
@@ -103,7 +103,7 @@ different job in each place.
 
 | Where | What it is there |
 | --- | --- |
-| `ci.yml` | Fast feedback. It runs on every push and every pull request and reports a credential within seconds of it landing. Nothing depends on it. |
+| `ci.yml` | Fast feedback. It runs on every pull request, and again on `main` after a merge, and reports a credential before anyone reviews the code. Nothing depends on it. |
 | `docker.yml` | A gate. `docker-build` declares `needs: secret-scan`, so a credential in the working tree means no image is built. A credential that is present at build time gets copied into a layer, and a layer is readable by anyone who can pull the image. |
 | `deploy.yml` | A gate. `deploy` declares `needs: [secret-scan, verify]`, so nothing is deployed from a tree with a credential in it or from code whose tests fail. |
 

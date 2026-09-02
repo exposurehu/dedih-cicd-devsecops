@@ -1,13 +1,18 @@
 name: CI
 
-# The workflow runs on every push and on every pull request, so both the main
-# branch and the pull requests get a green or red signal. workflow_dispatch
-# also allows a manual run from the Actions UI.
+# The workflow runs on every pull request, and again on main after a merge.
+#
+# pull_request already re-runs on every push to a branch that has an open pull
+# request, so triggering on every push as well would only run the same commit
+# twice. The run on main is not a duplicate of the pull request run: a merge can
+# break something that neither branch broke on its own, and this is what
+# catches it.
+#
+# workflow_dispatch adds a manual run from the Actions UI, on any branch.
 on:
-  push:
-    branches: ["**"]
   pull_request:
-    branches: ["**"]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Least privilege, at the workflow level. Every job starts with read only
@@ -50,9 +55,11 @@ jobs:
         run: pytest
 
   # ----------------------------------------------------------------------------
-  # Secret scanning, on every push and every pull request. This is the fast
-  # feedback: a credential that lands in the repository is reported within
-  # seconds of the push.
+  # Secret scanning, on every proposed change. This is the fast feedback: a
+  # credential in a pull request is reported within seconds, before anyone
+  # reviews the code. A credential pushed to a branch with no pull request goes
+  # unnoticed until one is opened, which is a real property of this setup and
+  # the reason push protection, which acts earlier, is worth having as well.
   #
   # The same scan is also a hard gate in docker.yml and deploy.yml, where it
   # decides whether an image gets built and whether anything gets deployed. The
