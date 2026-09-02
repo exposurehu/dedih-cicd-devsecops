@@ -67,6 +67,12 @@ Swagger UI: <http://127.0.0.1:8000/docs>
 environment variable, the endpoint answers `{"api_key_configured": false}` while nothing is set, and
 `true` once the workflow injects the secret. The value itself is never returned and never logged.
 
+## The participant guide
+
+`docs/LAB.md` is the Hungarian, step by step guide the participants follow. It quotes the real
+output of every workflow run, so it has to be checked against a live run after any change to the
+pipeline or the pins.
+
 ## Branches
 
 | Branch | What is on it |
