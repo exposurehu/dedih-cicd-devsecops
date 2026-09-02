@@ -200,6 +200,11 @@ jobs:
         #
         # The remediation is to raise the pin in requirements.txt to the fixed
         # version, then run the tests. There is no automatic fix command.
+        #
+        # The output is JSON rather than Trivy's own table, because that table
+        # is 200 columns wide and wraps into an unreadable mess in the Actions
+        # log. The compact list below fits on a projector. The full table is in
+        # the uploaded artifact for anybody who wants it.
         run: |
           set +e
           trivy image \
@@ -210,53 +215,57 @@ jobs:
             --exit-code 1 \
             --no-progress \
             --skip-version-check \
-            --format table \
-            --output trivy-gate.txt \
+            --format json \
+            --output trivy-gate.json \
             "dedih-demo:$TAG"
           STATUS=$?
           set -e
 
-          cat trivy-gate.txt
+          jq -r '.Results[]?.Vulnerabilities[]?
+                 | [.PkgName, .InstalledVersion, .VulnerabilityID, .Severity, .FixedVersion]
+                 | @tsv' trivy-gate.json > gate-rows.tsv
+
+          COUNT=$(wc -l < gate-rows.tsv | tr -d " ")
+
+          echo "=================================================================="
+          echo "GATE   our own packages, fixable only, HIGH and CRITICAL only"
+          echo "=================================================================="
+          awk -F'\t' 'BEGIN { printf "%-12s %-10s %-18s %-9s %s\n", "PACKAGE", "INSTALLED", "VULNERABILITY", "SEVERITY", "FIXED IN" }
+                      { printf "%-12s %-10s %-18s %-9s %s\n", $1, $2, $3, $4, $5 }' gate-rows.tsv
+          echo "------------------------------------------------------------------"
+          echo "$COUNT finding(s). The build stops here."
 
           {
             echo "## Image scan, gate"
             echo
             echo "Our own packages, fixable findings only, HIGH and CRITICAL only."
+            echo "**$COUNT finding(s).**"
             echo
-            echo '```'
-            cat trivy-gate.txt
-            echo '```'
+            echo "| Package | Installed | Vulnerability | Severity | Fixed in |"
+            echo "| --- | --- | --- | --- | --- |"
+            awk -F'\t' '{ printf "| %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5 }' gate-rows.tsv
           } >> "$GITHUB_STEP_SUMMARY"
 
           exit $STATUS
 
       - name: Scan the image, report
         # if: always() so the report is produced even when the gate above
-        # failed. This is the step that answers "what do we actually ship",
-        # and that question is most interesting when something is wrong.
+        # failed. This is the step that answers "what do we actually ship", and
+        # that question is most interesting when something is wrong.
         if: always()
         env:
           TAG: ${{ steps.tag.outputs.value }}
-        # The report. No filters at all: the base operating system is in it,
-        # the findings with no fix are in it, every severity is in it.
-        # --exit-code 0 means it never fails the build. What informs you can
-        # be complete.
+        # The report. No filters at all: the base operating system is in it, the
+        # findings with no fix are in it, every severity is in it. --exit-code 0
+        # means it never fails the build. What informs you can be complete.
         #
-        # --skip-db-update because the gate already downloaded the
-        # vulnerability database into the cache of this runner a minute ago.
+        # --skip-db-update because the gate already downloaded the vulnerability
+        # database into the cache of this runner a minute ago.
+        #
+        # The log gets counts, not rows. Two hundred and thirty nine rows of
+        # Trivy's own table is not something anyone reads. The full table goes
+        # into the artifact.
         run: |
-          trivy image \
-            --scanners vuln \
-            --pkg-types os,library \
-            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
-            --exit-code 0 \
-            --skip-db-update \
-            --no-progress \
-            --skip-version-check \
-            --format table \
-            --output trivy-report.txt \
-            "dedih-demo:$TAG"
-
           trivy image \
             --scanners vuln \
             --pkg-types os,library \
@@ -269,34 +278,65 @@ jobs:
             --output trivy-report.json \
             "dedih-demo:$TAG"
 
-          # The same data in machine readable form is what makes counting
-          # possible. This is the number to hold next to the gate above.
-          TOTAL=$(jq '[.Results[].Vulnerabilities // [] | length] | add // 0' trivy-report.json)
-          OS_COUNT=$(jq '[.Results[] | select(.Class == "os-pkgs") | .Vulnerabilities // [] | length] | add // 0' trivy-report.json)
-          LIB_COUNT=$(jq '[.Results[] | select(.Class == "lang-pkgs") | .Vulnerabilities // [] | length] | add // 0' trivy-report.json)
-          FIXABLE=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.FixedVersion != null)] | length' trivy-report.json)
+          trivy image \
+            --scanners vuln \
+            --pkg-types os,library \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --exit-code 0 \
+            --skip-db-update \
+            --no-progress \
+            --skip-version-check \
+            --format table \
+            --output trivy-report.txt \
+            "dedih-demo:$TAG"
 
-          cat trivy-report.txt
+          OS_ALL=$(jq '[.Results[] | select(.Class == "os-pkgs") | .Vulnerabilities // [] | length] | add // 0' trivy-report.json)
+          OS_FIX=$(jq '[.Results[] | select(.Class == "os-pkgs") | .Vulnerabilities // [] | .[] | select(.FixedVersion != null)] | length' trivy-report.json)
+          LIB_ALL=$(jq '[.Results[] | select(.Class == "lang-pkgs") | .Vulnerabilities // [] | length] | add // 0' trivy-report.json)
+          LIB_FIX=$(jq '[.Results[] | select(.Class == "lang-pkgs") | .Vulnerabilities // [] | .[] | select(.FixedVersion != null)] | length' trivy-report.json)
+          TOTAL=$((OS_ALL + LIB_ALL))
+          TOTAL_FIX=$((OS_FIX + LIB_FIX))
+
+          N_CRITICAL=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity == "CRITICAL")] | length' trivy-report.json)
+          N_HIGH=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity == "HIGH")] | length' trivy-report.json)
+          N_MEDIUM=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity == "MEDIUM")] | length' trivy-report.json)
+          N_LOW=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity == "LOW")] | length' trivy-report.json)
+          N_UNKNOWN=$(jq '[.Results[].Vulnerabilities // [] | .[] | select(.Severity == "UNKNOWN")] | length' trivy-report.json)
+
+          echo "=================================================================="
+          echo "REPORT   everything in the image, nothing filtered out"
+          echo "=================================================================="
+          printf "%-28s %10s %12s\n" "" "FINDINGS" "WITH A FIX"
+          printf "%-28s %10s %12s\n" "Base operating system" "$OS_ALL" "$OS_FIX"
+          printf "%-28s %10s %12s\n" "Python packages" "$LIB_ALL" "$LIB_FIX"
+          echo "------------------------------------------------------------------"
+          printf "%-28s %10s %12s\n" "Total" "$TOTAL" "$TOTAL_FIX"
+          echo
+          echo "CRITICAL $N_CRITICAL   HIGH $N_HIGH   MEDIUM $N_MEDIUM   LOW $N_LOW   UNKNOWN $N_UNKNOWN"
+          echo "------------------------------------------------------------------"
+          echo "This step never fails. The gate stopped the build on a subset of"
+          echo "these: the ones in our own packages that have a fix today."
 
           {
             echo "## Image scan, report"
             echo
             echo "Everything the image contains. This step never fails the build."
             echo
-            echo "| | Count |"
+            echo "| | Findings | With a fix |"
+            echo "| --- | --- | --- |"
+            echo "| Base operating system | $OS_ALL | $OS_FIX |"
+            echo "| Python packages | $LIB_ALL | $LIB_FIX |"
+            echo "| **Total** | **$TOTAL** | **$TOTAL_FIX** |"
+            echo
+            echo "| Severity | Count |"
             echo "| --- | --- |"
-            echo "| All findings | $TOTAL |"
-            echo "| In the base operating system | $OS_COUNT |"
-            echo "| In the Python packages | $LIB_COUNT |"
-            echo "| Of these, has a fixed version | $FIXABLE |"
+            echo "| CRITICAL | $N_CRITICAL |"
+            echo "| HIGH | $N_HIGH |"
+            echo "| MEDIUM | $N_MEDIUM |"
+            echo "| LOW | $N_LOW |"
+            echo "| UNKNOWN | $N_UNKNOWN |"
             echo
-            echo "<details><summary>The full Trivy output</summary>"
-            echo
-            echo '```'
-            cat trivy-report.txt
-            echo '```'
-            echo
-            echo "</details>"
+            echo "The full Trivy table is in the **trivy-reports** artifact."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the scan reports
@@ -305,7 +345,7 @@ jobs:
         with:
           name: trivy-reports
           path: |
-            trivy-gate.txt
+            trivy-gate.json
             trivy-report.txt
             trivy-report.json
           if-no-files-found: ignore
