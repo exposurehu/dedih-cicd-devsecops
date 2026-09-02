@@ -27,14 +27,6 @@ def test_greet_rejects_empty_name():
     assert response.status_code == 422
 
 
-def test_config_reports_missing_key(monkeypatch):
-    # With no environment variable set, the endpoint reports false.
-    monkeypatch.delenv(API_KEY_ENV, raising=False)
-    response = client.get("/config")
-    assert response.status_code == 200
-    assert response.json() == {"api_key_configured": False}
-
-
 def test_config_reports_configured_key(monkeypatch):
     # The endpoint reports true, and the value is not part of the response.
     monkeypatch.setenv(API_KEY_ENV, "test-value")

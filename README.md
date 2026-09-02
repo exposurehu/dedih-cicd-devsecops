@@ -71,7 +71,7 @@ environment variable, the endpoint answers `{"api_key_configured": false}` while
 
 | Branch | What is on it |
 | --- | --- |
-| `main` | The green baseline. Three endpoints, five tests. |
+| `main` | The green baseline. Three endpoints, four tests. |
 | `feature/bad-pr` | A boundary test that contradicts the validation in `app/models.py`. CI is red. |
 | `secrets-leak` | A hardcoded credential in `app/config.py`, marked `DONOTUSE`. The secret scan is red. |
 
@@ -84,7 +84,7 @@ participants see a red required check block a merge in their own repository.
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | every push and pull request | `build-and-test`: lint, format check, tests. `secret-scan`: gitleaks over the working tree. |
 | `.github/workflows/docker.yml` | manual | Builds the image, smoke tests it, then scans it twice with Trivy. |
-| `.github/workflows/deploy.yml` | manual | Shows how a secret reaches a job, what a scope means, and what an environment gate adds. |
+| `.github/workflows/deploy.yml` | manual | Shows how a secret reaches a job, what the log makes of it, and what gate an environment adds. |
 | `.github/workflows/ai-review.yml` | manual | Downloads a small model onto the runner and posts its review as a pull request comment. |
 
 Two more files sit next to them:
@@ -99,7 +99,26 @@ action runs inside the calling job, so it works under a job that has `environmen
 the `env:` of that job. A reusable workflow runs as its own job and the calling job cannot set an
 `environment:` on it, because `on.workflow_call` does not support that keyword. Environment scoped
 secrets therefore never reach a reusable workflow, with or without `secrets: inherit`. `deploy.yml`
-uses both, so the difference is visible in a single run.
+has one of each, so the difference is visible in a single run.
+
+## The secret, end to end
+
+The chain is one name, repeated three times. There is nothing else to it:
+
+```
+repository secret            OPENAI_API_KEY
+      |
+      v   deploy.yml   env: OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+runner process environment   OPENAI_API_KEY
+      |
+      v   app/config.py   os.environ.get(API_KEY_ENV)
+the application              api_key_configured() -> true
+```
+
+On the `secrets-leak` branch `GET /config` answers `true` because the value is written into
+`app/config.py`. After the value is deleted it answers `false`. After the secret is created and
+`deploy.yml` runs it answers `true` again, and the value is nowhere in the repository. Same
+behaviour, different source.
 
 ## Image scanning
 
