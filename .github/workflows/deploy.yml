@@ -1,16 +1,22 @@
 name: Deploy
 
 # ----------------------------------------------------------------------------
-# Simulated deployment. Nothing is deployed anywhere: the job starts the
+# A deployment pipeline. Nothing is deployed anywhere: the last job starts the
 # application on the runner with the secret injected and asks the application
-# what it knows about its own configuration. That is enough to show:
+# what it knows about its own configuration. That is enough to show what a
+# deployment has to get right, without needing a server to deploy to.
 #
-#   1. how a secret reaches a job, and what the log shows of it
-#   2. the deployment gate an environment adds, on top of the merge gate that
-#      branch protection adds
-#   3. a reusable workflow and a composite action next to each other
+# Three jobs, and the shape is the lesson as much as the content:
 #
-# Manual start only: Actions > Deploy > Run workflow.
+#   secret-scan  ---\
+#                     ---> deploy-staging
+#   verify       ---/
+#
+# Nothing is deployed from a tree that contains a credential, and nothing is
+# deployed from code whose tests fail. Both gates run at the same time, and
+# either one failing means the deployment never starts.
+#
+# Manual start: Actions > Deploy > Run workflow, then pick the branch.
 # ----------------------------------------------------------------------------
 
 on:
@@ -22,31 +28,50 @@ permissions:
 jobs:
 
   # ----------------------------------------------------------------------------
-  # A reusable workflow instead of a list of steps. It runs as its own job, on
-  # its own runner, which is why it shows up separately in the Actions UI. A
-  # deploy pipeline that runs the tests before deploying is the ordinary reason
-  # to reach for one: the same checks, defined once, called from more than one
-  # workflow.
+  # Gate one: no credential in the working tree. The steps live in
+  # .github/actions/secret-scan and are the same ones ci.yml and docker.yml run.
+  # ----------------------------------------------------------------------------
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Scan for secrets
+        uses: ./.github/actions/secret-scan
+
+  # ----------------------------------------------------------------------------
+  # Gate two: the tests pass. This one is a reusable workflow rather than a list
+  # of steps, so it runs as its own job on its own runner and shows up
+  # separately in the Actions UI. The same checks are defined once and called
+  # from wherever they are needed.
   # ----------------------------------------------------------------------------
   verify:
     uses: ./.github/workflows/reusable-checks.yml
 
   # ----------------------------------------------------------------------------
-  # The deployment job.
+  # The deployment.
   #
-  # environment: staging does two things. It applies the protection rules of
-  # that environment, so a required reviewer holds the job in a waiting state
-  # until somebody approves it. And it gives the job access to the secrets of
-  # that environment, on top of the repository secrets it can already see.
+  # needs: names both gates. A gate that fails does not make this job fail, it
+  # makes it never run at all: the Actions UI shows it as skipped. Nothing was
+  # built, nothing was shipped, nothing has to be undone.
   #
-  # A reusable workflow could not do this. on.workflow_call does not support
-  # environment:, so the calling job cannot set one, and an environment scoped
-  # secret never reaches it. A composite action runs inside this job, so it is
-  # not affected.
+  # environment: staging applies the protection rules of that environment, so a
+  # required reviewer holds the job in a waiting state until somebody approves
+  # it. That is a second kind of gate: branch protection decides what may be
+  # merged, an environment decides what may be released.
+  #
+  # A reusable workflow could not carry that keyword. on.workflow_call does not
+  # support environment:, so the calling job cannot set one. A composite action
+  # runs inside this job and is not affected, which is why the Python setup
+  # below is a composite action and the checks above are a reusable workflow.
   # ----------------------------------------------------------------------------
   deploy-staging:
     name: Deploy to staging
-    needs: verify
+    needs: [secret-scan, verify]
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -54,7 +79,6 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python and install the dependencies
-        # A composite action. Its steps run inside this job.
         uses: ./.github/actions/setup
 
       - name: What the log shows of the secret

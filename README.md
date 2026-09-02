@@ -83,8 +83,8 @@ participants see a red required check block a merge in their own repository.
 | File | Trigger | What it does |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | every push and pull request | `build-and-test`: lint, format check, tests. `secret-scan`: gitleaks over the working tree. |
-| `.github/workflows/docker.yml` | manual | Builds the image, smoke tests it, then scans it twice with Trivy. |
-| `.github/workflows/deploy.yml` | manual | Shows how a secret reaches a job, what the log makes of it, and what gate an environment adds. |
+| `.github/workflows/docker.yml` | manual | `secret-scan`, then a build that `needs:` it, a smoke test and two Trivy scans. |
+| `.github/workflows/deploy.yml` | manual | Two gates, `secret-scan` and `verify`, then a deployment that `needs:` both. |
 | `.github/workflows/ai-review.yml` | manual | Downloads a small model onto the runner and posts its review as a pull request comment. |
 
 Two more files sit next to them:
@@ -92,7 +92,25 @@ Two more files sit next to them:
 | File | What it is |
 | --- | --- |
 | `.github/actions/setup/action.yml` | A composite action: set up Python, install the dependencies. Used by every job that needs Python. |
+| `.github/actions/secret-scan/action.yml` | A composite action: install a pinned gitleaks and scan the working tree. Used by all three workflows. |
 | `.github/workflows/reusable-checks.yml` | A reusable workflow that runs the lint and the tests as its own job. `deploy.yml` calls it. |
+
+## Gates and dependencies
+
+The secret scan is defined once and wired in three times, and it does a
+different job in each place.
+
+| Where | What it is there |
+| --- | --- |
+| `ci.yml` | Fast feedback. It runs on every push and every pull request and reports a credential within seconds of it landing. Nothing depends on it. |
+| `docker.yml` | A gate. `docker-build` declares `needs: secret-scan`, so a credential in the working tree means no image is built. A credential that is present at build time gets copied into a layer, and a layer is readable by anyone who can pull the image. |
+| `deploy.yml` | A gate. `deploy-staging` declares `needs: [secret-scan, verify]`, so nothing is deployed from a tree with a credential in it or from code whose tests fail. |
+
+The difference between the two roles is worth stating plainly. A check that
+fails reports a problem and the work carries on around it. A job that another
+job `needs:` stops the work: the dependent job is shown as skipped, which means
+it never started. Nothing was built, nothing was shipped, nothing has to be
+undone.
 
 The two are the same idea with different mechanics, and the difference is not cosmetic. A composite
 action runs inside the calling job, so it works under a job that has `environment:` set and it sees

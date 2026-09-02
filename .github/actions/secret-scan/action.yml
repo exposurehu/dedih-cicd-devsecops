@@ -1,0 +1,57 @@
+name: "Secret scan"
+description: >
+  Installs a pinned gitleaks and scans the working tree for values that have the
+  shape of a credential: API keys, tokens, private keys.
+
+# A composite action, like .github/actions/setup. It is here rather than copied
+# into three workflow files because the same scan gates three different things:
+# the push in ci.yml, the image build in docker.yml and the deployment in
+# deploy.yml.
+#
+# The gitleaks binary is MIT licensed and free. The gitleaks/gitleaks-action
+# wrapper has been paid for organisations since 2024 and would ask for a
+# GITLEAKS_LICENSE secret, so the binary is installed directly from the releases
+# and pinned to an exact version.
+
+inputs:
+  version:
+    description: "The gitleaks version to install."
+    required: false
+    default: "8.30.1"
+
+runs:
+  using: composite
+  steps:
+    - name: Install gitleaks
+      shell: bash
+      env:
+        GITLEAKS_VERSION: ${{ inputs.version }}
+      run: |
+        curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz gitleaks
+        sudo mv gitleaks /usr/local/bin/
+        gitleaks version
+
+    - name: Scan the working tree
+      shell: bash
+      # gitleaks dir scans the files as they are now. gitleaks git scans the
+      # commit history instead, and would keep failing forever once a credential
+      # has been committed, because deleting the value from the file does not
+      # remove it from the history. That is a true statement about the leak and
+      # a bad gate, so the gate looks at the current state, and the history scan
+      # is run by hand when a leak is found.
+      run: |
+        gitleaks dir . \
+          --no-banner \
+          --redact \
+          --report-format json \
+          --report-path gitleaks-report.json
+
+    - name: Upload the report
+      # if: always() so the report is kept exactly when the scan failed and
+      # somebody needs to see what was found.
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: gitleaks-report-${{ github.job }}
+        path: gitleaks-report.json
+        if-no-files-found: ignore

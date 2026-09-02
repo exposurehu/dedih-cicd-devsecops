@@ -50,51 +50,25 @@ jobs:
         run: pytest
 
   # ----------------------------------------------------------------------------
-  # Secret scanning. gitleaks looks for values that have the shape of a
-  # credential: API keys, tokens, private keys.
+  # Secret scanning, on every push and every pull request. This is the fast
+  # feedback: a credential that lands in the repository is reported within
+  # seconds of the push.
   #
-  # The gitleaks binary is MIT licensed and free. The gitleaks/gitleaks-action
-  # wrapper has been paid for organisations since 2024 and would ask for a
-  # GITLEAKS_LICENSE secret, so the binary is installed directly from the
-  # releases and pinned to an exact version.
+  # The same scan is also a hard gate in docker.yml and deploy.yml, where it
+  # decides whether an image gets built and whether anything gets deployed. The
+  # steps live in .github/actions/secret-scan so there is one definition of
+  # them.
   # ----------------------------------------------------------------------------
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    # Least privilege at the job level. This job reads the repository and
+    # writes nothing back, so that is all it asks for.
     permissions:
       contents: read
-    env:
-      GITLEAKS_VERSION: "8.30.1"
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
 
-      - name: Install gitleaks
-        run: |
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz gitleaks
-          sudo mv gitleaks /usr/local/bin/
-          gitleaks version
-
-      - name: Scan the working tree
-        # gitleaks dir scans the files as they are now. gitleaks git scans the
-        # commit history instead, and would keep failing forever once a
-        # credential has been committed, because deleting the value from the
-        # file does not remove it from the history. That is a true statement
-        # about the leak and a bad merge gate, so the gate looks at the current
-        # state and the history scan is run by hand when a leak is found.
-        run: |
-          gitleaks dir . \
-            --no-banner \
-            --redact \
-            --report-format json \
-            --report-path gitleaks-report.json
-
-      - name: Upload the report
-        # if: always() so the report is kept exactly when the scan failed and
-        # somebody needs to see what was found.
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: gitleaks-report
-          path: gitleaks-report.json
-          if-no-files-found: ignore
+      - name: Scan for secrets
+        uses: ./.github/actions/secret-scan

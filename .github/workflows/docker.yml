@@ -6,15 +6,16 @@ name: Docker build
 # Manual start only: Actions > Docker build > Run workflow.
 #
 # What the workflow does:
-#   1. builds the image from docker/Dockerfile
-#   2. starts the container and calls the endpoints for real
-#   3. scans the built image twice, once as a gate and once as a report
+#   1. scans the working tree for credentials, and stops here if it finds one
+#   2. builds the image from docker/Dockerfile
+#   3. starts the container and calls the endpoints for real
+#   4. scans the built image twice, once as a gate and once as a report
 #
-# Step 2 matters: an image that builds is not necessarily an image that starts.
+# Step 3 matters: an image that builds is not necessarily an image that starts.
 # A green build is worth something when it also checks that the artifact it
 # produced works.
 #
-# Steps 3 and 4 are the same scanner with different filters, and the gap
+# The last two are the same scanner with different filters, and the gap
 # between the two numbers is the point. The gate looks at what we chose, the
 # report looks at what we actually ship.
 # ----------------------------------------------------------------------------
@@ -31,9 +32,35 @@ permissions:
   contents: read
 
 jobs:
+
+  # ----------------------------------------------------------------------------
+  # The gate in front of the build. A credential that is in the working tree
+  # when the image is built gets copied into a layer, and a layer is readable by
+  # anyone who can pull the image. Deleting the file later does not remove it
+  # from the layer, exactly as deleting it from a file does not remove it from
+  # the git history. So nothing gets built until this job is green.
+  # ----------------------------------------------------------------------------
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Scan for secrets
+        uses: ./.github/actions/secret-scan
+
   docker-build:
     name: Docker build, smoke test and image scan
     runs-on: ubuntu-latest
+
+    # needs: makes this job wait for the other one and, more to the point, skip
+    # entirely if that one fails. A skipped job is not a failed job: it never
+    # started. That is the difference between a check that reports a problem and
+    # a gate that stops the work.
+    needs: secret-scan
 
     # Least privilege: this job only reads the repository, it writes nothing
     # back. Pushing to a registry would need more, see the end of the file.
