@@ -85,6 +85,7 @@ participants see a red required check block a merge in their own repository.
 | `.github/workflows/ci.yml` | every push and pull request | `build-and-test`: lint, format check, tests. `secret-scan`: gitleaks over the working tree. |
 | `.github/workflows/docker.yml` | manual | `secret-scan`, then a build that `needs:` it, a smoke test and two Trivy scans. |
 | `.github/workflows/deploy.yml` | manual | Two gates, `secret-scan` and `verify`, then a deployment that `needs:` both. |
+| `.github/workflows/deploy-environments.yml` | manual | The same file with a GitHub Environment added. The diff against `deploy.yml` is the lesson. |
 | `.github/workflows/ai-review.yml` | manual | Downloads a small model onto the runner and posts its review as a pull request comment. |
 
 Two more files sit next to them:
@@ -104,7 +105,7 @@ different job in each place.
 | --- | --- |
 | `ci.yml` | Fast feedback. It runs on every push and every pull request and reports a credential within seconds of it landing. Nothing depends on it. |
 | `docker.yml` | A gate. `docker-build` declares `needs: secret-scan`, so a credential in the working tree means no image is built. A credential that is present at build time gets copied into a layer, and a layer is readable by anyone who can pull the image. |
-| `deploy.yml` | A gate. `deploy-staging` declares `needs: [secret-scan, verify]`, so nothing is deployed from a tree with a credential in it or from code whose tests fail. |
+| `deploy.yml` | A gate. `deploy` declares `needs: [secret-scan, verify]`, so nothing is deployed from a tree with a credential in it or from code whose tests fail. |
 
 The difference between the two roles is worth stating plainly. A check that
 fails reports a problem and the work carries on around it. A job that another
@@ -116,8 +117,24 @@ The two are the same idea with different mechanics, and the difference is not co
 action runs inside the calling job, so it works under a job that has `environment:` set and it sees
 the `env:` of that job. A reusable workflow runs as its own job and the calling job cannot set an
 `environment:` on it, because `on.workflow_call` does not support that keyword. Environment scoped
-secrets therefore never reach a reusable workflow, with or without `secrets: inherit`. `deploy.yml`
-has one of each, so the difference is visible in a single run.
+secrets therefore never reach a reusable workflow, with or without `secrets: inherit`.
+`deploy-environments.yml` has one of each under a real environment, so the difference is visible in
+a single run.
+
+## Two deploy workflows
+
+`deploy.yml` and `deploy-environments.yml` are the same file. Strip the comments and the difference
+is four lines: the workflow name, a `workflow_dispatch` input of `type: environment`, the job's
+display name, and `environment: ${{ inputs.target }}` on the deploy job.
+
+The duplication is deliberate. The difference between the two files is the entire cost of putting a
+pipeline behind a GitHub Environment, and it is only readable if nothing else differs. Do not
+refactor them into one.
+
+`type: environment` fills the dropdown on the Run workflow screen from the environments that exist
+in the repository. Nothing lists them in the file, so creating one in Settings is enough for it to
+appear. With no environments created the dropdown is empty and the run cannot be started, so the
+environments have to exist first.
 
 ## The secret, end to end
 
