@@ -279,9 +279,9 @@ Nyisd ki a piros jobot, a `Scan for secrets` lépést:
 ```
 SECRET SCAN   1 finding(s)
 ==================================================================
-app/config.py:25
+app/config.py:13
     rule:    generic-api-key
-    entropy: 5.0219283
+    entropy: 4.947703
     match:   OPENAI_API_KEY", "REDACTED"
 ------------------------------------------------------------------
 The value is redacted above. Open the file at the line shown.
