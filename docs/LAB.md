@@ -282,7 +282,7 @@ SECRET SCAN   1 finding(s)
 app/config.py:25
     rule:    generic-api-key
     entropy: 5.0219283
-    match:   API_KEY_ENV, "REDACTED"
+    match:   OPENAI_API_KEY", "REDACTED"
 ------------------------------------------------------------------
 The value is redacted above. Open the file at the line shown.
 ```
@@ -315,7 +315,7 @@ visszacsinálni.
 Nyisd meg a `secrets-leak` ágon az `app/config.py` fájlt. Az utolsó sor:
 
 ```python
-    return bool(os.environ.get(API_KEY_ENV, "sk-proj-<itt a kulcs>").strip())
+    return bool(os.environ.get("OPENAI_API_KEY", "sk-proj-<itt a kulcs>").strip())
 ```
 
 > A teljes érték itt szándékosan nincs kiírva. Ha kiírnánk, a `secret-scan` job
@@ -338,7 +338,7 @@ ez a dolga.
 Szerkeszd a fájlt a `secrets-leak` ágon (ceruza ikon), és írd vissza üresre:
 
 ```python
-    return bool(os.environ.get(API_KEY_ENV, "").strip())
+    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
 ```
 
 **Commit changes** > **Commit directly to the secrets-leak branch**.

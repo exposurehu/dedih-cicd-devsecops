@@ -1,6 +1,5 @@
 from fastapi.testclient import TestClient
 
-from app.config import API_KEY_ENV
 from app.main import app
 
 # TestClient does not start a server, it calls the routing of the FastAPI
@@ -29,7 +28,7 @@ def test_greet_rejects_empty_name():
 
 def test_config_reports_configured_key(monkeypatch):
     # The endpoint reports true, and the value is not part of the response.
-    monkeypatch.setenv(API_KEY_ENV, "test-value")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-value")
     response = client.get("/config")
     assert response.status_code == 200
     assert response.json() == {"api_key_configured": True}
