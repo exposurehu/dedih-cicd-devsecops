@@ -277,15 +277,20 @@ Deploy                    skipped
 Nyisd ki a piros jobot, a `Scan for secrets` lépést:
 
 ```
-WRN leaks found: 1
-{
-  "RuleID": "generic-api-key",
-  "Description": "Detected a Generic API Key...",
-  "StartLine": 10,
-  "File": "/scan/app/config.py",
-  "Entropy": 5.0219283
-}
+SECRET SCAN   1 finding(s)
+==================================================================
+app/config.py:25
+    rule:    generic-api-key
+    entropy: 5.0219283
+    match:   API_KEY_ENV, "REDACTED"
+------------------------------------------------------------------
+The value is redacted above. Open the file at the line shown.
 ```
+
+A fájl neve és a sor száma megvan, az érték viszont nem. A `--redact`
+kapcsoló miatt a szkenner soha nem írja ki magát a titkot, mert azzal
+pontosan azt tenné, ami ellen véd: bemásolná egy naplóba, amit sokan
+elolvashatnak.
 
 A gitleaks nem ismeri fel, milyen szolgáltatáshoz tartozik a kulcs. Azt látja,
 hogy egy `API_KEY` nevű azonosító mellett egy hosszú, magas entrópiájú string

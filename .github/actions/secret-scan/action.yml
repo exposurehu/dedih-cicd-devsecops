@@ -39,12 +39,33 @@ runs:
       # remove it from the history. That is a true statement about the leak and
       # a bad gate, so the gate looks at the current state, and the history scan
       # is run by hand when a leak is found.
+      #
+      # The report goes to a file so it can be uploaded, but a file nobody
+      # opens is not feedback. gitleaks only prints "leaks found: 1" to the
+      # console, so the findings are printed here as well: file, line and the
+      # rule that matched. The value itself is never printed, --redact takes
+      # care of that.
       run: |
+        set +e
         gitleaks dir . \
           --no-banner \
           --redact \
           --report-format json \
           --report-path gitleaks-report.json
+        STATUS=$?
+        set -e
+
+        if [ -s gitleaks-report.json ]; then
+          COUNT=$(jq 'length' gitleaks-report.json)
+          echo "=================================================================="
+          echo "SECRET SCAN   $COUNT finding(s)"
+          echo "=================================================================="
+          jq -r '.[] | "\(.File):\(.StartLine)\n    rule:    \(.RuleID)\n    entropy: \(.Entropy)\n    match:   \(.Match)\n"' gitleaks-report.json
+          echo "------------------------------------------------------------------"
+          echo "The value is redacted above. Open the file at the line shown."
+        fi
+
+        exit $STATUS
 
     - name: Upload the report
       # if: always() so the report is kept exactly when the scan failed and
