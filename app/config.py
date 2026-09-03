@@ -10,4 +10,4 @@ import os
 
 def api_key_configured() -> bool:
     """Return True when a non-empty API key is present in the environment."""
-    return bool(os.environ.get("OPENAI_API_KEY", "sk-proj-DONOTUSE1aB2cD3eF4gH5iJ6kL7m").strip())
+    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
