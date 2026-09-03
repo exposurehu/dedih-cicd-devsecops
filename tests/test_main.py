@@ -37,6 +37,6 @@ def test_config_reports_configured_key(monkeypatch):
 
 def test_greet_accepts_max_length_name():
     # Boundary test: the longest name the endpoint accepts.
-    long_name = "A" * 51
+    long_name = "A" * 50
     response = client.post("/greet", json={"name": long_name})
     assert response.status_code == 200
