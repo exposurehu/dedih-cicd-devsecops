@@ -89,26 +89,35 @@ jobs:
 
       - name: Run the review
         run: |
-          # The prompt is the diff plus the current source of the application.
-          # Without the source the model would only see the changed lines and
-          # could not tell whether they contradict anything.
+          # The diff comes first and the source is only attached when the change
+          # touches it. Put the source first and it becomes the bulk of the
+          # prompt, and a small model reviews that instead of the change: a one
+          # line version bump then gets the same three remarks about app/ as
+          # every other pull request. A change under app/ or tests/ still needs
+          # the source, because a test can only be judged against the rules it
+          # is testing.
           {
-            echo "You are reviewing a pull request in a Python FastAPI project."
-            echo "List the concrete problems in the change: bugs, wrong assumptions about"
-            echo "the existing code, missing validation. Be specific and short, at most six"
-            echo "bullet points. If you find no problem, say so in one sentence."
+            echo "You are reviewing one change in a Python FastAPI project."
+            echo "Only the change below is under review. Report the concrete problems it"
+            echo "introduces: bugs, wrong assumptions about the existing code, missing"
+            echo "validation. Do not review code the change does not touch. At most four"
+            echo "bullet points. If the change looks correct, say so in one sentence."
             echo "Do not comment on formatting and do not repeat the code back."
             echo
-            echo "### The current source of the application"
-            echo
-            for f in app/*.py; do
-              echo "--- $f ---"
-              cat "$f"
-              echo
-            done
-            echo "### The change in the pull request"
+            echo "### The change"
             echo
             cat diff.txt
+
+            if grep -qE '^\+\+\+ b/(app|tests)/' diff.txt; then
+              echo
+              echo "### The existing source, as reference. Not under review."
+              echo
+              for f in app/*.py; do
+                echo "--- $f ---"
+                cat "$f"
+                echo
+              done
+            fi
           } > prompt.txt
 
           # jq -Rs reads the file as one raw string and escapes it for JSON, so
